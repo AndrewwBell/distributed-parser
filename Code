@@ -1,0 +1,81 @@
+from abc import ABC, abstractmethod
+import requests
+import time
+from pymongo import MongoClient
+
+class AbstractWorker(ABC):
+
+    @abstractmethod
+    def fetch_data(self, *args, **kwargs):
+        pass
+
+class VKGroupWorker(AbstractWorker):
+
+    def __init__(self, access_token, version="5.131", max_requests=5, db_uri="mongodb://localhost:27017", db_name="vk_data"):
+        self.access_token = access_token
+        self.version = version
+        self.max_requests = max_requests
+        self.base_url = "https://api.vk.com/method/wall.get"
+        self.client = MongoClient(db_uri)
+        self.db = self.client[db_name]
+        self.collection = self.db["posts"]
+
+    def fetch_data(self, group_id, end_time, count=10):
+        
+        posts = []
+        offset = 0
+
+        for _ in range(self.max_requests):
+            params = {
+                "owner_id": group_id,
+                "access_token": self.access_token,
+                "v": self.version,
+                "count": count,
+                "offset": offset,
+                "filter": "owner",
+                "end_time": end_time
+            }
+            response = requests.get(self.base_url, params=params).json()
+
+            if "error" in response:
+                print("Error:", response["error"].get("error_msg", "Unknown error"))
+                break
+
+            items = response.get('response', {}).get('items', [])
+
+            if not items:
+                print("Конец")
+                break
+
+            for item in items:
+                post_data = {
+                    "id": item.get("id"),
+                    "date": item.get("date"),
+                    "text": item.get("text", ""),
+                    "owner_id": group_id
+                }
+                self.collection.update_one({"id": post_data["id"]}, {"$set": post_data}, upsert=True)
+                posts.append(post_data["text"])
+
+            print(f"Собрано {len(items)} постов. Offset: {offset}")
+
+            offset += count
+            time.sleep(0.34)
+
+        else:
+            print("Лимит запросов.")
+
+        return posts
+
+
+if __name__ == "__main__":
+    with open('token.txt') as f:
+        access_token = f.read()
+    group_id = "lilgarage" 
+    end_time = 1734361200  #парсим до этого времени - 2024-12-16 15:00:00
+    worker = VKGroupWorker(access_token)
+    posts = worker.fetch_data(group_id, end_time)
+
+    print(f"Всего собрано : {len(posts)} постов")
+    for post in posts:
+        print(post)
